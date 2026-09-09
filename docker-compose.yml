@@ -1,0 +1,9 @@
+services:
+  admin:
+    build:
+      context: .
+      args:
+        VITE_API_URL: ${VITE_API_URL:?Set VITE_API_URL in .env to the public backend URL ending in /api}
+    ports:
+      - "${ADMIN_PORT:-8080}:80"
+    restart: unless-stopped

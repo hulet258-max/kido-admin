@@ -6,7 +6,7 @@ const categories = ['animals', 'science', 'education', 'drawing', 'stories', 'sp
 
 function initialConfig(): AdminConfig {
   return {
-    apiUrl: localStorage.getItem('kido-admin-api') || import.meta.env.VITE_API_URL || 'http://localhost:4000/api',
+    apiUrl: localStorage.getItem('kido-admin-api') || import.meta.env.VITE_API_URL || 'http://localhost:4001/api',
     adminKey: localStorage.getItem('kido-admin-key') || 'kido-local-admin',
   };
 }
