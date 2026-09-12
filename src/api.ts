@@ -48,4 +48,10 @@ export const adminApi = {
       xhr.send(form);
     });
   },
+  importFolder: (config: AdminConfig, payload: Record<string, unknown>) =>
+    request<{ published: Video[]; failed: Array<{ file: string; error: string }>; total: number }>(
+      config,
+      '/admin/videos/from-folder',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
 };

@@ -77,25 +77,100 @@ export default function App() {
   );
 }
 
+function videoFilesFromList(list: FileList | null) {
+  return Array.from(list || [])
+    .filter((file) => /\.(mp4|mov|m4v)$/i.test(file.name))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+function sharedVideoFields(form: FormData) {
+  return {
+    description: String(form.get('description') || ''),
+    category: String(form.get('category') || ''),
+    language: String(form.get('language') || 'en'),
+    minAge: Number(form.get('minAge')),
+    maxAge: Number(form.get('maxAge')),
+    creator: String(form.get('creator') || ''),
+    tags: String(form.get('tags') || ''),
+    thumbnailUrl: String(form.get('thumbnailUrl') || ''),
+    isShort: form.get('isShort') === 'true',
+    isEducational: form.get('isEducational') === 'true',
+    isReligious: form.get('isReligious') === 'true',
+  };
+}
+
+function copySharedVideoFields(target: FormData, source: FormData, title: string) {
+  target.append('title', title);
+  const shared = sharedVideoFields(source);
+  target.append('description', shared.description);
+  target.append('category', shared.category);
+  target.append('language', shared.language);
+  target.append('minAge', String(shared.minAge));
+  target.append('maxAge', String(shared.maxAge));
+  target.append('creator', shared.creator);
+  target.append('tags', shared.tags);
+  if (shared.thumbnailUrl) target.append('thumbnailUrl', shared.thumbnailUrl);
+  if (shared.isShort) target.append('isShort', 'true');
+  if (shared.isEducational) target.append('isEducational', 'true');
+  if (shared.isReligious) target.append('isReligious', 'true');
+}
+
 function VideoWorkspace({ config, videos, loading, onChanged }: { config: AdminConfig; videos: Video[]; loading: boolean; onChanged: () => Promise<void> }) {
+  const [mode, setMode] = useState<'single' | 'folder'>('single');
   const [progress, setProgress] = useState<number | null>(null);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [folderFileCount, setFolderFileCount] = useState(0);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     setError('');
-    setStatus('Uploading video…');
-    setProgress(0);
     const form = new FormData(formElement);
+    const title = String(form.get('title') || '').trim();
     try {
-      await adminApi.uploadVideo(config, form, (value) => {
-        setProgress(value);
-        if (value >= 1) setStatus('Segmenting and storing in MinIO…');
-      });
+      if (mode === 'folder') {
+        const folder = String(form.get('folder') || '').trim();
+        const files = videoFilesFromList((formElement.elements.namedItem('folderFiles') as HTMLInputElement | null)?.files ?? null);
+        if (!folder && files.length === 0) {
+          setError('Choose a folder of videos or enter a folder path on the backend server.');
+          return;
+        }
+        if (folder) {
+          setStatus('Reading the folder and publishing every video…');
+          setProgress(0);
+          const result = await adminApi.importFolder(config, { folder, title, ...sharedVideoFields(form) });
+          const failedNote = result.failed.length ? ` ${result.failed.length} failed.` : '';
+          setStatus(`Published ${result.published.length} of ${result.total} videos as “${title} 1” … “${title} ${result.published.length}”.${failedNote}`);
+          if (result.failed.length) {
+            setError(result.failed.map((item) => `${item.file}: ${item.error}`).join(' · '));
+          }
+        } else {
+          setProgress(0);
+          for (let index = 0; index < files.length; index += 1) {
+            const numbered = `${title} ${index + 1}`;
+            setStatus(`Uploading ${index + 1} of ${files.length}: ${numbered}`);
+            const payload = new FormData();
+            payload.append('video', files[index]);
+            copySharedVideoFields(payload, form, numbered);
+            await adminApi.uploadVideo(config, payload, (value) => {
+              setProgress((index + value) / files.length);
+              if (value >= 1) setStatus(`Segmenting ${numbered}…`);
+            });
+          }
+          setStatus(`Published ${files.length} videos as “${title} 1” … “${title} ${files.length}”.`);
+        }
+      } else {
+        setStatus('Uploading video…');
+        setProgress(0);
+        await adminApi.uploadVideo(config, form, (value) => {
+          setProgress(value);
+          if (value >= 1) setStatus('Segmenting and storing in MinIO…');
+        });
+        setStatus('Video published successfully.');
+      }
       formElement.reset();
-      setStatus('Video published successfully.');
+      setFolderFileCount(0);
       await onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Upload failed');
@@ -118,17 +193,40 @@ function VideoWorkspace({ config, videos, loading, onChanged }: { config: AdminC
   return (
     <div className="workspace">
       <section className="panel form-panel">
-        <div className="panel-heading"><div className="panel-icon coral">＋</div><div><h2>Upload a video</h2><p>One quality, segmented into 4-second HLS files.</p></div></div>
+        <div className="panel-heading"><div className="panel-icon coral">＋</div><div><h2>{mode === 'folder' ? 'Upload a folder of videos' : 'Upload a video'}</h2><p>{mode === 'folder' ? 'Every file in the folder gets the same description and settings, named with an incrementing title.' : 'One quality, segmented into 4-second HLS files.'}</p></div></div>
         <form className="content-form" onSubmit={submit}>
-          <label className="file-drop"><input name="video" type="file" accept="video/mp4,video/quicktime,video/x-m4v" required /><strong>Choose MP4, MOV, or M4V</strong><span>The source is removed after processing · maximum 500 MB</span></label>
-          <div className="two"><label>Title<input name="title" required minLength={2} /></label><label>Creator<input name="creator" required /></label></div>
+          <div className="mode-toggle" role="tablist">
+            <button type="button" className={mode === 'single' ? 'active' : ''} onClick={() => setMode('single')}>One video</button>
+            <button type="button" className={mode === 'folder' ? 'active' : ''} onClick={() => setMode('folder')}>Folder of videos</button>
+          </div>
+          {mode === 'single' ? (
+            <label className="file-drop"><input name="video" type="file" accept="video/mp4,video/quicktime,video/x-m4v" required /><strong>Choose MP4, MOV, or M4V</strong><span>The source is removed after processing · maximum 500 MB</span></label>
+          ) : (
+            <>
+              <label className="file-drop">
+                <input
+                  name="folderFiles"
+                  type="file"
+                  accept="video/mp4,video/quicktime,video/x-m4v"
+                  multiple
+                  {...{ webkitdirectory: '', directory: '' }}
+                  onChange={(event) => setFolderFileCount(videoFilesFromList(event.target.files).length)}
+                />
+                <strong>{folderFileCount > 0 ? `${folderFileCount} videos selected` : 'Choose a folder of MP4, MOV, or M4V files'}</strong>
+                <span>Files are uploaded in name order as Title 1, Title 2, Title 3…</span>
+              </label>
+              <label>Server folder path<input name="folder" placeholder="C:\videos\space  or  /data/videos/space" /><span className="field-hint">If this is filled, the backend reads that folder on the server instead of uploading from this browser.</span></label>
+            </>
+          )}
+          <div className="two"><label>{mode === 'folder' ? 'Title prefix' : 'Title'}<input name="title" required minLength={2} placeholder={mode === 'folder' ? 'Space Adventure' : ''} /></label><label>Creator<input name="creator" required /></label></div>
+          {mode === 'folder' && <p className="field-hint">Videos are named “Prefix 1”, “Prefix 2”, and so on. The description and settings below are applied to every file.</p>}
           <label>Description<textarea name="description" rows={3} required /></label>
           <div className="three"><label>Category<select name="category">{categories.map((value) => <option key={value}>{value}</option>)}</select></label><label>Language<select name="language"><option value="en">English</option><option value="am">Amharic</option><option value="om">Oromo</option><option value="ti">Tigrinya</option><option value="so">Somali</option></select></label><label>Thumbnail URL<input name="thumbnailUrl" type="url" placeholder="Optional" /></label></div>
           <div className="three"><label>Minimum age<input name="minAge" type="number" min="3" max="15" defaultValue="3" required /></label><label>Maximum age<input name="maxAge" type="number" min="3" max="15" defaultValue="12" required /></label><label>Tags<input name="tags" placeholder="space, science, stars" required /></label></div>
           <div className="checks"><label><input name="isShort" type="checkbox" value="true" /> Short video</label><label><input name="isEducational" type="checkbox" value="true" /> Educational</label><label><input name="isReligious" type="checkbox" value="true" /> Religious</label></div>
           {progress != null && <div className="progress"><span style={{ width: `${Math.max(3, progress * 100)}%` }} /></div>}
           {status && <p className="success-text">{status}</p>}{error && <p className="error-text">{error}</p>}
-          <button className="primary" disabled={progress != null}>{progress != null ? 'Processing…' : 'Upload and publish'}</button>
+          <button className="primary" disabled={progress != null}>{progress != null ? 'Processing…' : mode === 'folder' ? 'Upload folder and publish' : 'Upload and publish'}</button>
         </form>
       </section>
 
